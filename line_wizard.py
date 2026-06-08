@@ -89,5 +89,6 @@ def handle_message(event):
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n🚀 [FastAPI] กำลังเริ่มรันเซิร์ฟเวอร์บอทบุก LINE...")
-    uvicorn.run("line_wizard:app", host="0.0.0.0", port=8000, reload=True)
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("line_wizard:app", host="0.0.0.0", port=port)
