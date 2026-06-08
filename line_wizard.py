@@ -15,10 +15,15 @@ app = FastAPI()
 import os
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("google_api_key") or ""
-LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") or os.environ.get("line_channel_access_token") or ""
-LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET") or os.environ.get("line_channel_secret") or os.environ.get("line_channal_secret") or ""
 
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") or os.environ.get("LINE_CHANNAL_ACCESS_TOKEN") or os.environ.get("line_channel_access_token") or ""
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET") or os.environ.get("LINE_CHANNAL_SECRET") or os.environ.get("line_channel_secret") or os.environ.get("line_channal_secret") or ""
+
+os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+# ====================================================================================
 # บังคับอัปเดตระบบป้องกัน Langchain เออร์เรอร์
+os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+# ====================================================================================
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 # ====================================================================================
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY if GOOGLE_API_KEY else ""
