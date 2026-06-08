@@ -11,14 +11,18 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 
 app = FastAPI()
 
-# ==================== [ ตั้งค่า KEY ต่างๆ ตรงนี้ ] ====================
-# 1. ใส่ Google Gemini API Key เดิมของคุณ (ตัวที่ดึงมาจาก Google AI Studio)
-os.environ["GOOGLE_API_KEY"] = ""
+# ======================== [ ดึงค่าคีย์ลับอัตโนมัติจากระบบ ] ========================
+import os
 
-# 2. ใส่คีย์ลับของ LINE ที่คุณเปิดเจอในหน้าเว็บ LINE Developers
-LINE_CHANNEL_ACCESS_TOKEN = "".strip()
-LINE_CHANNEL_SECRET = "".strip()
-# ==================================================================
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("google_api_key") or ""
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") or os.environ.get("line_channel_access_token") or ""
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET") or os.environ.get("line_channel_secret") or os.environ.get("line_channal_secret") or ""
+
+# บังคับอัปเดตระบบป้องกัน Langchain เออร์เรอร์
+os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+# ====================================================================================
+os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY if GOOGLE_API_KEY else ""
+# ====================================================================================
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
