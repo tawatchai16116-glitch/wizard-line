@@ -158,3 +158,49 @@ def handle_image_message(event):
             event.reply_token,
             TextSendMessage(text="ขออภัยครับ ระบบเกิดข้อผิดพลาดในการอ่านรูปภาพ ลองใหม่อีกครั้งนะครับ")
         )
+        import io
+from PIL import Image
+import google.generativeai as genai
+
+@handler.add(MessageEvent, message=ImageMessage)
+def handle_image_message(event):
+    try:
+        # 1. ดึงข้อมูลรูปภาพจาก LINE ออกมาเป็นไบนารีข้อมูล
+        message_content = line_bot_api.get_message_content(event.message.id)
+        image_bytes = io.BytesIO()
+        for chunk in message_content.iter_content():
+            image_bytes.write(chunk)
+        image_bytes.seek(0)
+        
+        # 2. เปิดรูปภาพด้วย Pillow
+        img = Image.open(image_bytes)
+        
+        # 3. ส่งให้ Gemini อ่านค่า
+        prompt = """
+        คุณคือระบบตรวจสอบสลิปโอนเงินอัจฉริยะ 
+        จงตรวจสอบรูปภาพนี้ว่าเป็นสลิปโอนเงินของธนาคารไทย หรือสลิป TrueMoney ใช่หรือไม่?
+        ถ้าใช่ ให้สรุปข้อมูลต่อไปนี้ตอบกลับลูกค้าสั้นๆ เป็นกันเอง:
+        - ยอดโอนเงิน (บาท)
+        - วันที่และเวลา
+        - จากใคร ไปยังใคร
+        
+        ตัวอย่างการตอบ: "ได้รับสลิปเรียบร้อยครับ ยอดโอน 500 บาท จากคุณ ธวัชชัย เรียบร้อยครับ"
+        แต่ถ้าไม่ใช่รูปสลิป ให้ตอบว่า "ขออภัยครับ ภาพนี้ไม่ใช่สลิปโอนเงินที่ถูกต้องครับ"
+        """
+        
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        response = model.generate_content([prompt, img])
+        
+        # 4. ตอบกลับไลน์
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=response.text)
+        )
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="ระบบกำลังอัปเกรดการอ่านสลิป ลองส่งใหม่อีกทีนะน้า")
+        )
+       
