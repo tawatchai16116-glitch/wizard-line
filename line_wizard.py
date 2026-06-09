@@ -101,3 +101,60 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run("line_wizard:app", host="0.0.0.0", port=port)
+
+    from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage
+import tempfile
+
+# 1. เพิ่มฟังก์ชันสำหรับจัดการเมื่อมี "รูปภาพ" ส่งเข้ามาใน LINE
+@handler.add(MessageEvent, message=ImageMessage)
+def handle_image_message(event):
+    # ดึง ID ของข้อความรูปภาพ
+    message_id = event.message.id
+    
+    # ดาวน์โหลดไฟล์รูปภาพจาก LINE เก็บไว้ชั่วคราว
+    message_content = line_bot_api.get_message_content(message_id)
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tf:
+        for chunk in message_content.iter_content():
+            tf.write(chunk)
+        temp_file_path = tf.name
+
+    try:
+        # 2. เรียกใช้ Gemini Vision เพื่ออ่านรูปสลิป
+        # (หมายเหตุ: คำสั่งด้านล่างนี้เป็นการใช้สำหรับกูเกิลเจเนอเรทีฟเอไอ)
+        import google.generativeai as genai
+        from PIL import Image
+        
+        # เปิดรูปภาพที่เซฟไว้
+        img = Image.open(temp_file_path)
+        
+        # ตั้งคำสั่ง (Prompt) ให้ Gemini แกะข้อมูลสลิปอย่างแม่นยำ
+        prompt = """
+        คุณคือระบบตรวจสอบสลิปโอนเงินอัจฉริยะ 
+        จงตรวจสอบรูปภาพนี้ว่าเป็นสลิปโอนเงินของธนาคารไทยใช่หรือไม่?
+        ถ้าใช่ ให้ดึงข้อมูลต่อไปนี้ออกมา:
+        1. ชื่อธนาคาร
+        2. วันที่และเวลาที่โอน
+        3. จำนวนเงิน (บาท)
+        4. ชื่อผู้โอน และ ชื่อผู้รับเงิน
+        
+        แล้วสรุปตอบกลับลูกค้าสั้นๆ เป็นกันเอง เช่น "ได้รับสลิปเรียบร้อยครับ ยอดโอน XX บาท จากคุณ XX ไปยัง XX วันที่ XX"
+        แต่ถ้าภาพนี้ไม่ใช่สลิปโอนเงิน ให้ตอบสุภาพว่า "ขออภัยครับ ภาพนี้ไม่ใช่สลิปโอนเงิน กรุณาส่งรูปสลิปใหม่อีกครั้งนะครับ"
+        """
+        
+        # สั่งให้ Gemini ประมวลผลภาพ
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        response = model.generate_content([prompt, img])
+        
+        # 3. ส่งคำตอบกลับไปหาลูกค้าใน LINE
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=response.text)
+        )
+        
+    except Exception as e:
+        print(f"Error processing image: {e}")
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="ขออภัยครับ ระบบเกิดข้อผิดพลาดในการอ่านรูปภาพ ลองใหม่อีกครั้งนะครับ")
+        )
