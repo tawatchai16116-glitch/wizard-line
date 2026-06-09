@@ -1,9 +1,13 @@
 import os
+import io
+from PIL import Image
+import google.generativeai as genai
 from fastapi import FastAPI, Request, HTTPException
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage
 
+# คลังจำประวัติเดิมของน้า
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
@@ -11,63 +15,18 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 
 app = FastAPI()
 
-# ======================== [ ดึงค่าคีย์ลับอัตโนมัติจากระบบ ] ========================
-import os
-
+# ===== [ ดึงค่าคีย์ลับอัตโนมัติจากระบบ ] =====
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("google_api_key") or ""
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") or os.environ.get("LINE_CHANNAL_ACCESS_TOKEN") or ""
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET") or os.environ.get("LINE_CHANNAL_SECRET") or ""
 
-LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") or os.environ.get("LINE_CHANNAL_ACCESS_TOKEN") or os.environ.get("line_channel_access_token") or ""
-LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET") or os.environ.get("LINE_CHANNAL_SECRET") or os.environ.get("line_channel_secret") or os.environ.get("line_channal_secret") or ""
-
-os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
-# ====================================================================================
-# บังคับอัปเดตระบบป้องกัน Langchain เออร์เรอร์
-os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
-# ====================================================================================
-os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
-# ====================================================================================
-os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY if GOOGLE_API_KEY else ""
-# ====================================================================================
+# ลงทะเบียนคีย์กับกูเกิลโดยตรงเพื่อใช้ระบบอ่านภาพ
+genai.configure(api_key=GOOGLE_API_KEY)
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 3. โครงสร้างสมองธุรกิจและจิตวิทยาตัวเดิมของคุณ
-system_instruction = """
-คุณคือ "wizard" AI อัจฉริยะที่เป็นส่วนผสมของ นักกลยุทธ์ธุรกิจชั้นยอด (Business Strategist) และ นักจิตวิทยาพฤติกรรมมนุษย์ (Behavioral Psychologist)
-
-แนวทางในการวิเคราะห์และตอบคำถามของคุณ:
-1. วิเคราะห์จุดอ่อนธุรกิจอย่างตรงไปตรงมา: มองหา Pain points, Bottlenecks หรือสิ่งที่ไม่สมเหตุสมผลในโมเดลธุรกิจ
-2. ใช้จิตวิทยาขับเคลื่อน: นำทฤษฎีจิตวิทยามาประยุกต์ใช้เสมอ เช่น Loss Aversion, Social Proof หรือ Hook Model
-3. ระบบเรียนรู้และประเมินตัวเอง (Self-Reflection): ในทุกๆ ท้ายคำตอบ จงสร้างหัวข้อ "[บันทึกการเรียนรู้ของ wizard]" เพื่อสรุปบทเรียนใหม่ๆ
-
-ตอบด้วยภาษาไทยที่เฉียบคม มีพลัง และโฟกัสที่การเติบโต (Growth Mindset)
-"""
-
-prompt = ChatPromptTemplate.from_messages([
-    ("system", system_instruction),
-    MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "{input}")
-])
-
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.7)
-chain = prompt | llm
-
-chat_store = {}
-def get_session_history(session_id: str):
-    if session_id not in chat_store:
-        chat_store[session_id] = ChatMessageHistory()
-    return chat_store[session_id]
-
-anima_agent = RunnableWithMessageHistory(
-    chain,
-    get_session_history,
-    input_messages_key="input",
-    history_messages_key="chat_history"
-)
-
-# เส้นทางสำหรับให้ LINE ยิงสัญญาณ (Webhook) เข้ามา
-@app.post("/webhook")
+@app.post("/callback")
 async def callback(request: Request):
     signature = request.headers.get("X-Line-Signature")
     body = await request.body()
@@ -77,130 +36,103 @@ async def callback(request: Request):
         raise HTTPException(status_code=400, detail="Invalid signature")
     return "OK"
 
-# ฟังก์ชันจัดการเมื่อมีคนส่งข้อความตัวอักษรเข้ามาใน LINE
+# ----------------------------------------------------
+# 🟢 [ฟังก์ชันข้อความ] สมองกล 4 ด้านขั้นเทพตามสั่ง
+# ----------------------------------------------------
 @handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_text = event.message.text
-    # ใช้ User ID ของไลน์แต่ละคนเป็น Session ID เพื่อให้ AI จำแยกคนได้
-    user_id = event.source.user_id 
+def handle_text_message(event):
+    user_message = event.message.text
+    model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
     
-    # ส่งข้อความไปถาม Gemini wizard
-    response = anima_agent.invoke(
-        {"input": user_text},
-        config={"configurable": {"session_id": user_id}}
+    system_instruction = """
+    คุณคือ "Super AI Executive Coach" ที่ปรึกษาธุรกิจและผู้เชี่ยวชาญระดับสูง มีบุคลิกเฉลียวฉลาด สุภาพ เป็นกันเอง และพร้อมช่วยเหลือคู่สนทนาอย่างเต็มที่ โดยคุณมีความเชี่ยวชาญใน 4 ด้านหลักดังนี้:
+
+    1. ที่ปรึกษาและเชี่ยวชาญด้านโมเดลธุรกิจ (Business Model Expert):
+       - สามารถวิเคราะห์ ออกแบบ และวิพากษ์ Business Model Canvas, Value Proposition รวมถึงกลยุทธ์การสร้างรายได้ (Revenue Streams) ของธุรกิจทุกรูปแบบได้อย่างเฉียบคม
+       - แนะนำกลยุทธ์การแข่งขัน การหาจุดขายที่แตกต่าง (USP) และการปรับเปลี่ยนโมเดลธุรกิจตามเทรนด์โลก
+
+    2. เทคนิคการปิดการขายสินค้าทุกประเภท (Master of Sales Closing):
+       - เชี่ยวชาญจิตวิทยาการขาย การโน้มน้าวใจ การตอบข้อโต้แย้ง (Objection Handling) และเทคนิคการปิดการขายแบบเนียนๆ ทั้งแบบ B2B, B2C และออนไลน์
+       - สามารถแนะนำสคริปต์การขาย กลยุทธ์การตั้งราคา และจิตวิทยาการสร้างความต้องการให้ลูกค้าอยากซื้อทันที
+
+    3. เทคนิคเขียนโปรเจกต์เพื่อระดมทุนแบบผู้เชี่ยวชาญ (Pitch Deck & Fundraising Specialist):
+       - มีความรู้ลึกซึ้งในการเขียนแผนธุรกิจ โครงร่างโปรเจกต์ (Project Proposal) เพื่อขอทุน หรือระดมทุนจาก Venture Capital (VC) และ Angel Investor
+       - รู้วิธีการเล่าเรื่อง (Storytelling) การวางโครงสร้าง Pitch Deck ให้น่าดึงดูด และกลยุทธ์การนำเสนอตัวเลขทางการเงินให้เข้าตาผู้ลงทุน
+
+    4. นักจิตวิทยาพัฒนาและดึงศักยภาพของผู้สนทนา (Human Potential & Performance Coach):
+       - ใช้หลักจิตวิทยาเชิงบวก (Positive Psychology) และกระบวนการโค้ช (Coaching) เพื่อรับฟัง ตั้งคำถามปลายเปิดเพื่อชวนคิด และสะท้อนมุมมอง
+       - ช่วยลดความเครียด สร้างแรงบันดาลใจ ดึงศักยภาพที่ซ่อนอยู่ และช่วยให้คู่สนทนาค้นพบแนวทางแก้ปัญหาหรือเป้าหมายที่ชัดเจนได้ด้วยตัวเอง
+
+    จงตอบคำถามลูกค้าหรือตอบน้าอย่างมืออาชีพ แต่ใช้ภาษาที่เข้าใจง่าย กระชับ นำไปใช้จริงได้ทันที และแฝงความจริงใจในทุกคำตอบ
+    """
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_instruction),
+        MessagesPlaceholder(variable_name="history"),
+        ("human", "{input}"),
+    ])
+    
+    chain = prompt | model
+    demo_ephemeral_chat_history = ChatMessageHistory()
+    
+    with_message_history = RunnableWithMessageHistory(
+        chain,
+        lambda session_id: demo_ephemeral_chat_history,
+        input_messages_key="input",
+        history_messages_key="history",
     )
     
-    # ส่งคำตอบกลับไปหาผู้ใช้บนแอป LINE
+    response = with_message_history.invoke(
+        {"input": user_message},
+        config={"configurable": {"session_id": event.source.user_id}},
+    )
+    
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(text=response.content)
     )
 
-if __name__ == "__main__":
-    import uvicorn
-    import os
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("line_wizard:app", host="0.0.0.0", port=port)
-
-    from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage
-import tempfile
-
-# 1. เพิ่มฟังก์ชันสำหรับจัดการเมื่อมี "รูปภาพ" ส่งเข้ามาใน LINE
-@handler.add(MessageEvent, message=ImageMessage)
-def handle_image_message(event):
-    # ดึง ID ของข้อความรูปภาพ
-    message_id = event.message.id
-    
-    # ดาวน์โหลดไฟล์รูปภาพจาก LINE เก็บไว้ชั่วคราว
-    message_content = line_bot_api.get_message_content(message_id)
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tf:
-        for chunk in message_content.iter_content():
-            tf.write(chunk)
-        temp_file_path = tf.name
-
-    try:
-        # 2. เรียกใช้ Gemini Vision เพื่ออ่านรูปสลิป
-        # (หมายเหตุ: คำสั่งด้านล่างนี้เป็นการใช้สำหรับกูเกิลเจเนอเรทีฟเอไอ)
-        import google.generativeai as genai
-        from PIL import Image
-        
-        # เปิดรูปภาพที่เซฟไว้
-        img = Image.open(temp_file_path)
-        
-        # ตั้งคำสั่ง (Prompt) ให้ Gemini แกะข้อมูลสลิปอย่างแม่นยำ
-        prompt = """
-        คุณคือระบบตรวจสอบสลิปโอนเงินอัจฉริยะ 
-        จงตรวจสอบรูปภาพนี้ว่าเป็นสลิปโอนเงินของธนาคารไทยใช่หรือไม่?
-        ถ้าใช่ ให้ดึงข้อมูลต่อไปนี้ออกมา:
-        1. ชื่อธนาคาร
-        2. วันที่และเวลาที่โอน
-        3. จำนวนเงิน (บาท)
-        4. ชื่อผู้โอน และ ชื่อผู้รับเงิน
-        
-        แล้วสรุปตอบกลับลูกค้าสั้นๆ เป็นกันเอง เช่น "ได้รับสลิปเรียบร้อยครับ ยอดโอน XX บาท จากคุณ XX ไปยัง XX วันที่ XX"
-        แต่ถ้าภาพนี้ไม่ใช่สลิปโอนเงิน ให้ตอบสุภาพว่า "ขออภัยครับ ภาพนี้ไม่ใช่สลิปโอนเงิน กรุณาส่งรูปสลิปใหม่อีกครั้งนะครับ"
-        """
-        
-        # สั่งให้ Gemini ประมวลผลภาพ
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        response = model.generate_content([prompt, img])
-        
-        # 3. ส่งคำตอบกลับไปหาลูกค้าใน LINE
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=response.text)
-        )
-        
-    except Exception as e:
-        print(f"Error processing image: {e}")
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="ขออภัยครับ ระบบเกิดข้อผิดพลาดในการอ่านรูปภาพ ลองใหม่อีกครั้งนะครับ")
-        )
-        import io
-from PIL import Image
-import google.generativeai as genai
-
+# ----------------------------------------------------
+# 📸 [ฟังก์ชันรูปภาพ] ดึงภาพสดๆ ในแรม สแกนสลิปโอนเงิน
+# ----------------------------------------------------
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
     try:
-        # 1. ดึงข้อมูลรูปภาพจาก LINE ออกมาเป็นไบนารีข้อมูล
         message_content = line_bot_api.get_message_content(event.message.id)
         image_bytes = io.BytesIO()
         for chunk in message_content.iter_content():
             image_bytes.write(chunk)
         image_bytes.seek(0)
         
-        # 2. เปิดรูปภาพด้วย Pillow
         img = Image.open(image_bytes)
         
-        # 3. ส่งให้ Gemini อ่านค่า
-        prompt = """
-        คุณคือระบบตรวจสอบสลิปโอนเงินอัจฉริยะ 
+        analysis_prompt = """
+        คุณคือระบบตรวจสอบสลิปโอนเงินอัจฉริยะของร้าน 
         จงตรวจสอบรูปภาพนี้ว่าเป็นสลิปโอนเงินของธนาคารไทย หรือสลิป TrueMoney ใช่หรือไม่?
-        ถ้าใช่ ให้สรุปข้อมูลต่อไปนี้ตอบกลับลูกค้าสั้นๆ เป็นกันเอง:
-        - ยอดโอนเงิน (บาท)
-        - วันที่และเวลา
-        - จากใคร ไปยังใคร
+        ถ้าใช่ ให้สรุปข้อมูลสั้นๆ เป็นกันเองและชัดเจนตอบกลับลูกค้าดังนี้:
+        - ยอดเงินโอน (บาท)
+        - วันที่และเวลาที่โอนสำเร็จ
+        - ชื่อผู้โอนเงิน
         
-        ตัวอย่างการตอบ: "ได้รับสลิปเรียบร้อยครับ ยอดโอน 500 บาท จากคุณ ธวัชชัย เรียบร้อยครับ"
-        แต่ถ้าไม่ใช่รูปสลิป ให้ตอบว่า "ขออภัยครับ ภาพนี้ไม่ใช่สลิปโอนเงินที่ถูกต้องครับ"
+        ตัวอย่างการตอบ: "ได้รับยอดโอนเงินเรียบร้อยแล้วครับน้า! ยอดเงิน 500 บาท จากคุณ ธวัชชัย ระบบลงบันทึกให้เรียบร้อยครับ"
+        แต่ถ้าไม่ใช่รูปสลิป ให้ตอบว่า "ขออภัยครับน้า ภาพนี้ดูเหมือนไม่ใช่สลิปโอนเงินที่ถูกต้อง กรุณาลองส่งใหม่อีกครั้งนะครับ"
         """
         
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        response = model.generate_content([prompt, img])
+        vision_model = genai.GenerativeModel('gemini-2.5-flash')
+        response = vision_model.generate_content([analysis_prompt, img])
         
-        # 4. ตอบกลับไลน์
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=response.text)
         )
         
     except Exception as e:
-        print(f"Error: {e}")
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="ระบบกำลังอัปเกรดการอ่านสลิป ลองส่งใหม่อีกทีนะน้า")
+            TextSendMessage(text=f"บอทสแกนภาพสะดุดไปนิดนึงครับน้า (เนื่องจาก: {str(e)}) ลองส่งรูปอีกทีนะครับ")
         )
-       
+
+# บรรทัดสตาร์ตรันระบบสำหรับเครื่องข่าย FastAPI ท้ายไฟล์อย่างถูกต้อง
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("line_wizard:app", host="0.0.0.0", port=10000, reload=True)
