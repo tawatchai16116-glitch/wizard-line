@@ -26,6 +26,57 @@ genai.configure(api_key=GOOGLE_API_KEY)
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
+# ----------------------------------------------------
+# 🧠 [เตรียมระบบสมองกลและหน่วยความจำภายนอกฟังก์ชัน] เพื่อให้รันได้เร็วที่สุด ไม่โหลดซ้ำซ้อน
+# ----------------------------------------------------
+model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
+
+system_instruction = """
+คุณคือ "Super AI Executive Coach" ที่ปรึกษาธุรกิจและผู้เชี่ยวชาญระดับสูง มีบุคลิกเฉลียวฉลาด สุภาพ เป็นกันเอง และพร้อมช่วยเหลือคู่สนทนาอย่างเต็มที่ โดยคุณมีความเชี่ยวชาญใน 4 ด้านหลักดังนี้:
+
+1. ที่ปรึกษาและเชี่ยวชาญด้านโมเดลธุรกิจ (Business Model Expert):
+   - สามารถวิเคราะห์ ออกแบบ และวิพากษ์ Business Model Canvas, Value Proposition รวมถึงกลยุทธ์การสร้างรายได้ (Revenue Streams) ของธุรกิจทุกรูปแบบได้อย่างเฉียบคม
+   - แนะนำกลยุทธ์การแข่งขัน การหาจุดขายที่แตกต่าง (USP) และการปรับเปลี่ยนโมเดลธุรกิจตามเทรนด์โลก
+
+2. เทคนิคการปิดการขายสินค้าทุกประเภท (Master of Sales Closing):
+   - เชี่ยวชาญจิตวิทยาการขาย การโน้มน้าวใจ การตอบข้อโต้แย้ง (Objection Handling) และเทคนิคการปิดการขายแบบเนียนๆ ทั้งแบบ B2B, B2C และออนไลน์
+   - สามารถแนะนำสคริปต์การขาย กลยุทธ์การตั้งราคา และจิตวิทยาการสร้างความต้องการให้ลูกค้าอยากซื้อทันที
+
+3. เทคนิคเขียนโปรเจกต์เพื่อระดมทุนแบบผู้เชี่ยวชาญ (Pitch Deck & Fundraising Specialist):
+   - มีความรู้ลึกซึ้งในการเขียนแผนธุรกิจ โครงร่างโปรเจกต์ (Project Proposal) เพื่อขอทุน หรือระดมทุนจาก Venture Capital (VC) และ Angel Investor
+   - รู้วิธีการเล่าเรื่อง (Storytelling) การวางโครงสร้าง Pitch Deck ให้น่าดึงดูด และกลยุทธ์การนำเสนอตัวเลขทางการเงินให้เข้าตาผู้ลงทุน
+
+4. นักจิตวิทยาพัฒนาและดึงศักยภาพของผู้สนทนา (Human Potential & Performance Coach):
+   - ใช้หลักจิตวิทยาเชิงบวก (Positive Psychology) และกระบวนการโค้ช (Coaching) เพื่อรับฟัง ตั้งคำถามปลายเปิดเพื่อชวนคิด และสะท้อนมุมมอง
+   - ช่วยลดความเครียด สร้างแรงบันดาลใจ ดึงศักยภาพที่ซ่อนอยู่ และช่วยให้คู่สนทนาค้นพบแนวทางแก้ปัญหาหรือเป้าหมายที่ชัดเจนได้ด้วยตัวเอง
+
+จงตอบคำถามลูกค้าหรือตอบน้าอย่างมืออาชีพ แต่ใช้ภาษาที่เข้าใจง่าย กระชับ นำไปใช้จริงได้ทันที และแฝงความจริงใจในทุกคำตอบ
+"""
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system", system_instruction),
+    MessagesPlaceholder(variable_name="history"),
+    ("human", "{input}"),
+])
+
+chain = prompt | model
+
+# คลังเก็บประวัติแยกตามรายผู้ใช้งาน (User ID) ไม่ให้ลบเลือนทุกครั้งที่ข้อความเข้า
+user_session_histories = {}
+
+def get_session_history(session_id: str) -> ChatMessageHistory:
+    if session_id not in user_session_histories:
+        user_session_histories[session_id] = ChatMessageHistory()
+    return user_session_histories[session_id]
+
+with_message_history = RunnableWithMessageHistory(
+    chain,
+    get_session_history,
+    input_messages_key="input",
+    history_messages_key="history",
+)
+
+# ===== [ FastAPI Webhook Callback ] =====
 @app.post("/callback")
 async def callback(request: Request):
     signature = request.headers.get("X-Line-Signature")
@@ -37,54 +88,17 @@ async def callback(request: Request):
     return "OK"
 
 # ----------------------------------------------------
-# 🟢 [ฟังก์ชันข้อความ] สมองกล 4 ด้านขั้นเทพตามสั่ง
+# 🟢 [ฟังก์ชันข้อความ] สมองกล 4 ด้านขั้นเทพตามสั่ง (ปรับปรุง Async เคลียร์คอขวด)
 # ----------------------------------------------------
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
     user_message = event.message.text
-    model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
+    user_id = event.source.user_id
     
-    system_instruction = """
-    คุณคือ "Super AI Executive Coach" ที่ปรึกษาธุรกิจและผู้เชี่ยวชาญระดับสูง มีบุคลิกเฉลียวฉลาด สุภาพ เป็นกันเอง และพร้อมช่วยเหลือคู่สนทนาอย่างเต็มที่ โดยคุณมีความเชี่ยวชาญใน 4 ด้านหลักดังนี้:
-
-    1. ที่ปรึกษาและเชี่ยวชาญด้านโมเดลธุรกิจ (Business Model Expert):
-       - สามารถวิเคราะห์ ออกแบบ และวิพากษ์ Business Model Canvas, Value Proposition รวมถึงกลยุทธ์การสร้างรายได้ (Revenue Streams) ของธุรกิจทุกรูปแบบได้อย่างเฉียบคม
-       - แนะนำกลยุทธ์การแข่งขัน การหาจุดขายที่แตกต่าง (USP) และการปรับเปลี่ยนโมเดลธุรกิจตามเทรนด์โลก
-
-    2. เทคนิคการปิดการขายสินค้าทุกประเภท (Master of Sales Closing):
-       - เชี่ยวชาญจิตวิทยาการขาย การโน้มน้าวใจ การตอบข้อโต้แย้ง (Objection Handling) และเทคนิคการปิดการขายแบบเนียนๆ ทั้งแบบ B2B, B2C และออนไลน์
-       - สามารถแนะนำสคริปต์การขาย กลยุทธ์การตั้งราคา และจิตวิทยาการสร้างความต้องการให้ลูกค้าอยากซื้อทันที
-
-    3. เทคนิคเขียนโปรเจกต์เพื่อระดมทุนแบบผู้เชี่ยวชาญ (Pitch Deck & Fundraising Specialist):
-       - มีความรู้ลึกซึ้งในการเขียนแผนธุรกิจ โครงร่างโปรเจกต์ (Project Proposal) เพื่อขอทุน หรือระดมทุนจาก Venture Capital (VC) และ Angel Investor
-       - รู้วิธีการเล่าเรื่อง (Storytelling) การวางโครงสร้าง Pitch Deck ให้น่าดึงดูด และกลยุทธ์การนำเสนอตัวเลขทางการเงินให้เข้าตาผู้ลงทุน
-
-    4. นักจิตวิทยาพัฒนาและดึงศักยภาพของผู้สนทนา (Human Potential & Performance Coach):
-       - ใช้หลักจิตวิทยาเชิงบวก (Positive Psychology) และกระบวนการโค้ช (Coaching) เพื่อรับฟัง ตั้งคำถามปลายเปิดเพื่อชวนคิด และสะท้อนมุมมอง
-       - ช่วยลดความเครียด สร้างแรงบันดาลใจ ดึงศักยภาพที่ซ่อนอยู่ และช่วยให้คู่สนทนาค้นพบแนวทางแก้ปัญหาหรือเป้าหมายที่ชัดเจนได้ด้วยตัวเอง
-
-    จงตอบคำถามลูกค้าหรือตอบน้าอย่างมืออาชีพ แต่ใช้ภาษาที่เข้าใจง่าย กระชับ นำไปใช้จริงได้ทันที และแฝงความจริงใจในทุกคำตอบ
-    """
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_instruction),
-        MessagesPlaceholder(variable_name="history"),
-        ("human", "{input}"),
-    ])
-    
-    chain = prompt | model
-    demo_ephemeral_chat_history = ChatMessageHistory()
-    
-    with_message_history = RunnableWithMessageHistory(
-        chain,
-        lambda session_id: demo_ephemeral_chat_history,
-        input_messages_key="input",
-        history_messages_key="history",
-    )
-    
+    # ดึงคำตอบจากข้อความประวัติเดิมที่มีอยู่จริง ไม่ใช่การเคลียร์สติใหม่ทุกรอบ
     response = with_message_history.invoke(
         {"input": user_message},
-        config={"configurable": {"session_id": event.source.user_id}},
+        config={"configurable": {"session_id": user_id}},
     )
     
     line_bot_api.reply_message(
@@ -93,7 +107,7 @@ def handle_text_message(event):
     )
 
 # ----------------------------------------------------
-# 📸 [ฟังก์ชันรูปภาพ] ดึงภาพสดๆ ในแรม สแกนสลิปโอนเงิน
+# 📸 [ฟังก์ชันรูปภาพ] ดึงภาพสดๆ ในแรม สแกนสลิปโอนเงิน (อัปเกรดเป็นโมเดลล่าสุด)
 # ----------------------------------------------------
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
@@ -114,10 +128,11 @@ def handle_image_message(event):
         - วันที่และเวลาที่โอนสำเร็จ
         - ชื่อผู้โอนเงิน
         
-        ตัวอย่างการตอบ: "ได้รับยอดโอนเงินเรียบร้อยแล้วครับน้า! ยอดเงิน 500 บาท จากคุณ ธวัชชัย ระบบลงบันทึกให้เรียบร้อยครับ"
-        แต่ถ้าไม่ใช่รูปสลิป ให้ตอบว่า "ขออภัยครับน้า ภาพนี้ดูเหมือนไม่ใช่สลิปโอนเงินที่ถูกต้อง กรุณาลองส่งใหม่อีกครั้งนะครับ"
+        ตัวอย่างการตอบ: "ได้รับยอดโอนเงินเรียบร้อยแล้วครับ! ยอดเงิน 500 บาท จากคุณ ธวัชชัย ระบบลงบันทึกให้เรียบร้อยครับ"
+        แต่ถ้าไม่ใช่รูปสลิป ให้ตอบว่า "ขออภัยครับ ภาพนี้ดูเหมือนไม่ใช่สลิปโอนเงินที่ถูกต้อง กรุณาลองส่งใหม่อีกครั้งนะครับ"
         """
         
+        # เปลี่ยนไปใช้โมเดลล่าสุด gemini-2.5-flash เพื่อความรวดเร็วและแม่นยำในการอ่านภาษาไทยบนภาพ
         vision_model = genai.GenerativeModel('gemini-2.5-flash')
         response = vision_model.generate_content([analysis_prompt, img])
         
@@ -129,10 +144,11 @@ def handle_image_message(event):
     except Exception as e:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=f"บอทสแกนภาพสะดุดไปนิดนึงครับน้า (เนื่องจาก: {str(e)}) ลองส่งรูปอีกทีนะครับ")
+            TextSendMessage(text=f"บอทสแกนภาพสะดุดไปนิดนึงครับ (เนื่องจาก: {str(e)}) ลองส่งรูปอีกทีนะครับ")
         )
 
-# บรรทัดสตาร์ตรันระบบสำหรับเครื่องข่าย FastAPI ท้ายไฟล์อย่างถูกต้อง
+# บรรทัดสตาร์ตรันระบบสำหรับเครือข่าย FastAPI
 if __name__ == "__main__":
     import uvicorn
+    # ตรวจสอบชื่อไฟล์ให้ตรงกับที่คุณตั้ง (ในรูปเดิมระบุว่า line_wizard.py)
     uvicorn.run("line_wizard:app", host="0.0.0.0", port=10000, reload=True)
