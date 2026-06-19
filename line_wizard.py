@@ -2,7 +2,7 @@ import os
 import io
 from PIL import Image
 import google.generativeai as genai
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage
@@ -20,16 +20,14 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("google_api_
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") or os.environ.get("LINE_CHANNAL_ACCESS_TOKEN") or ""
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET") or os.environ.get("LINE_CHANNAL_SECRET") or ""
 
-# ลงทะเบียนคีย์กับกูเกิลโดยตรงเพื่อใช้ระบบอ่านภาพ
+# 🟢 ย้ายมาลงทะเบียนตรงนี้ให้เสร็จก่อนเรียกใช้งานโมเดล
 genai.configure(api_key=GOOGLE_API_KEY)
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ----------------------------------------------------
-# 🧠 [เตรียมระบบสมองกลและหน่วยความจำภายนอกฟังก์ชัน] เพื่อให้รันได้เร็วที่สุด ไม่โหลดซ้ำซ้อน
-# ----------------------------------------------------
-model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
+# 🧠 [เตรียมระบบสมองกลและหน่วยความจำ]
+model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GOOGLE_API_KEY)
 
 system_instruction = """
 คุณคือ "Super AI Executive Coach" ที่ปรึกษาธุรกิจและผู้เชี่ยวชาญระดับสูง มีบุคลิกเฉลียวฉลาด สุภาพ เป็นกันเอง และพร้อมช่วยเหลือคู่สนทนาอย่างเต็มที่ โดยคุณมีความเชี่ยวชาญใน 4 ด้านหลักดังนี้:
@@ -48,7 +46,7 @@ system_instruction = """
 
 4. นักจิตวิทยาพัฒนาและดึงศักยภาพของผู้สนทนา (Human Potential & Performance Coach):
    - ใช้หลักจิตวิทยาเชิงบวก (Positive Psychology) และกระบวนการโค้ช (Coaching) เพื่อรับฟัง ตั้งคำถามปลายเปิดเพื่อชวนคิด และสะท้อนมุมมอง
-   - ช่วยลดความเครียด สร้างแรงบันดาลใจ ดึงศักยภาพที่ซ่อนอยู่ และช่วยให้คู่สนทนาค้นพบแนวทางแก้ปัญหาหรือเป้าหมายที่ชัดเจนได้ด้วยตัวเอง
+   - ช่วยลดความเครียด สร้างแรงบันดาลใจ ดึงศักยภาพที่ซ่อนอยู่ และช่วยให้คู่สน swans ทนาค้นพบแนวทางแก้ปัญหาหรือเป้าหมายที่ชัดเจนได้ด้วยตัวเอง
 
 จงตอบคำถามลูกค้าหรือตอบน้าอย่างมืออาชีพ แต่ใช้ภาษาที่เข้าใจง่าย กระชับ นำไปใช้จริงได้ทันที และแฝงความจริงใจในทุกคำตอบ
 """
@@ -61,7 +59,6 @@ prompt = ChatPromptTemplate.from_messages([
 
 chain = prompt | model
 
-# คลังเก็บประวัติแยกตามรายผู้ใช้งาน (User ID) ไม่ให้ลบเลือนทุกครั้งที่ข้อความเข้า
 user_session_histories = {}
 
 def get_session_history(session_id: str) -> ChatMessageHistory:
@@ -76,39 +73,37 @@ with_message_history = RunnableWithMessageHistory(
     history_messages_key="history",
 )
 
-# ===== [ FastAPI Webhook Callback ] =====
+# ===== [ FastAPI Webhook Callback แก้ไขจุด X-Line-Signature ] =====
 @app.post("/callback")
-async def callback(request: Request):
-    signature = request.headers.get("X-Line-Signature")
+async def callback(request: Request, x_line_signature: str = Header(None)):
     body = await request.body()
     try:
-        handler.handle(body.decode("utf-8"), signature)
+        handler.handle(body.decode("utf-8"), x_line_signature)
     except InvalidSignatureError:
         raise HTTPException(status_code=400, detail="Invalid signature")
     return "OK"
 
-# ----------------------------------------------------
-# 🟢 [ฟังก์ชันข้อความ] สมองกล 4 ด้านขั้นเทพตามสั่ง (ปรับปรุง Async เคลียร์คอขวด)
-# ----------------------------------------------------
+# 🟢 [ฟังก์ชันข้อความ]
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
     user_message = event.message.text
     user_id = event.source.user_id
     
-    # ดึงคำตอบจากข้อความประวัติเดิมที่มีอยู่จริง ไม่ใช่การเคลียร์สติใหม่ทุกรอบ
-    response = with_message_history.invoke(
-        {"input": user_message},
-        config={"configurable": {"session_id": user_id}},
-    )
+    try:
+        response = with_message_history.invoke(
+            {"input": user_message},
+            config={"configurable": {"session_id": user_id}},
+        )
+        reply_text = response.content
+    except Exception as e:
+        reply_text = "ขออภัยครับน้า สมองกลระบบข้อความสะดุดเล็กน้อย ลองพิมพ์ใหม่อีกครั้งนะครับ"
     
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text=response.content)
+        TextSendMessage(text=reply_text)
     )
 
-# ----------------------------------------------------
-# 📸 [ฟังก์ชันรูปภาพ] ดึงภาพสดๆ ในแรม สแกนสลิปโอนเงิน (อัปเกรดเป็นโมเดลล่าสุด)
-# ----------------------------------------------------
+# 📸 [ฟังก์ชันรูปภาพ]
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
     try:
@@ -128,11 +123,10 @@ def handle_image_message(event):
         - วันที่และเวลาที่โอนสำเร็จ
         - ชื่อผู้โอนเงิน
         
-        ตัวอย่างการตอบ: "ได้รับยอดโอนเงินเรียบร้อยแล้วครับ! ยอดเงิน 500 บาท จากคุณ ธวัชชัย ระบบลงบันทึกให้เรียบร้อยครับ"
-        แต่ถ้าไม่ใช่รูปสลิป ให้ตอบว่า "ขออภัยครับ ภาพนี้ดูเหมือนไม่ใช่สลิปโอนเงินที่ถูกต้อง กรุณาลองส่งใหม่อีกครั้งนะครับ"
+        ตัวอย่างการตอบ: "ได้รับยอดโอนเงินเรียบร้อยแล้วครับน้า! ยอดเงิน 500 บาท จากคุณ ธวัชชัย ระบบลงบันทึกให้เรียบร้อยครับ"
+        แต่ถ้าไม่ใช่รูปสลิป ให้ตอบว่า "ขออภัยครับน้า ภาพนี้ดูเหมือนไม่ใช่สลิปโอนเงินที่ถูกต้อง กรุณาลองส่งใหม่อีกครั้งนะครับ"
         """
         
-        # เปลี่ยนไปใช้โมเดลล่าสุด gemini-2.5-flash เพื่อความรวดเร็วและแม่นยำในการอ่านภาษาไทยบนภาพ
         vision_model = genai.GenerativeModel('gemini-2.5-flash')
         response = vision_model.generate_content([analysis_prompt, img])
         
@@ -144,11 +138,9 @@ def handle_image_message(event):
     except Exception as e:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=f"บอทสแกนภาพสะดุดไปนิดนึงครับ (เนื่องจาก: {str(e)}) ลองส่งรูปอีกทีนะครับ")
+            TextSendMessage(text=f"บอทสแกนภาพสะดุดไปนิดนึงครับน้า (เนื่องจาก: {str(e)}) ลองส่งรูปอีกทีนะครับ")
         )
 
-# บรรทัดสตาร์ตรันระบบสำหรับเครือข่าย FastAPI
 if __name__ == "__main__":
     import uvicorn
-    # ตรวจสอบชื่อไฟล์ให้ตรงกับที่คุณตั้ง (ในรูปเดิมระบุว่า line_wizard.py)
     uvicorn.run("line_wizard:app", host="0.0.0.0", port=10000, reload=True)
